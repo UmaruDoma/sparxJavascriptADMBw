@@ -1,0 +1,23 @@
+!INC Local Scripts.EAConstants-JavaScript
+ 
+function main()
+{
+	var elem as EA.Element;
+	elem = Repository.GetElementByGuid("{0DEEAD35-1D9F-4bc8-ABA3-3C829F782179}");
+	var typ as EA.Element;
+	typ = Repository.GetElementByGuid("{3DF0179A-6A2E-4580-AEDF-C7CCE1FD16E8}");
+	elem.PropertyType = typ.ElementID;
+	elem.PropertyTypeName = typ.Name;
+	elem.Update();
+	elem.Refresh();
+	// EA.Element.PropertyType
+	
+	var fold as EA.Element;
+	fold = Repository.GetElementByGuid("{D360B326-8421-4a78-B57E-366467DC04D0}");
+	fold.Update();
+	fold.Refresh();
+	
+	
+}
+
+main();
