@@ -16,7 +16,8 @@ function main()
 	fold = Repository.GetElementByGuid("{D360B326-8421-4a78-B57E-366467DC04D0}");
 	fold.Update();
 	fold.Refresh();
-	
+
+	// in PDATA1 steht dann {3DF0179A-6A2E-4580-AEDF-C7CCE1FD16E8}
 	
 }
 
