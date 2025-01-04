@@ -1,0 +1,40 @@
+!INC Local Scripts.EAConstants-JavaScript
+
+/* Script Name: MakeResourceArch
+ * Author: Sabine Schreiber-Ehle
+ * Purpose: Change Type for planning minecraft server
+ * Date: 04.01.2025
+ */
+
+/*
+ * Project Browser Script main function
+ */
+function OnProjectBrowserScript()
+{
+	// Get the type of element selected in the Project Browser
+	var treeSelectedType = Repository.GetTreeSelectedItemType();
+	
+	// Handling Code: Uncomment any types you wish this script to support
+	// NOTE: You can toggle comments on multiple lines that are currently
+	// selected with [CTRL]+[SHIFT]+[C].
+	switch ( treeSelectedType )
+	{
+		case otElement :
+		{
+			// Code for when an element is selected
+			var theElement as EA.Element;
+			theElement = Repository.GetTreeSelectedObject();
+			theElement.Stereotype="NAFv4-ADMBw::ResourceArchitecture"	;
+			theElement.Update();
+			theElement.Refresh();
+			break;
+		}
+
+		default:
+		{
+			// Error message
+			Session.Prompt( "This script does not support items of this type.", promptOK );
+		}
+	}
+}
+OnProjectBrowserScript();
