@@ -1,0 +1,1099 @@
+!INC Local Scripts.EAConstants-JScript
+
+/*
+ * Erzeugt fuer das im Browser markierte ADMBw-ResourceArchitecture-Element
+ * ein P2-Resource-Structure-Diagramm mit allen rekursiven Kindelementen.
+ *
+ * Das Layout wird in zwei Phasen berechnet:
+ *   1. Bottom-up: Groesse jedes Teilbaums bestimmen.
+ *   2. Top-down:  Eltern und Kinder kollisionsfrei ineinander platzieren.
+ *
+ * Kompatibel mit der klassischen EA-JavaScript-Engine:
+ * kein let/const, keine Arrow Functions, keine Map/Set-Klassen.
+ */
+
+var CFG = {
+    /*
+     * Leer lassen: Das Skript versucht den vollqualifizierten Diagrammtyp
+     * aus einem bereits vorhandenen P2-Resource-Structure-Diagramm zu lesen.
+     *
+     * Alternativ hier den FQN Ihrer MDG eintragen, zum Beispiel:
+     * p2DiagramMetaType: "ProfilID::DiagrammMetatyp"
+     */
+    p2DiagramMetaType: "",
+
+    /*
+     * Optional: Ziel-Package fuer das neue Diagramm.
+     * Leer = Package des markierten ResourceArchitecture-Elements.
+     * Beispiel: "{01234567-89AB-CDEF-0123-456789ABCDEF}"
+     */
+    targetPackageGuid: "",
+
+    /* Fallback, wenn kein MDG-Diagrammtyp ermittelt werden kann. */
+    fallbackDiagramType: "Logical",
+
+    diagramNamePrefix: "P2",
+
+    /* Leer = Name des markierten ResourceArchitecture-Elements. */
+    projectName: "",
+
+    diagramNameSuffix: "Resource Structure",
+
+    leftMargin: 60,
+    topMargin: 60,
+
+    paddingX: 40,
+    paddingBottom: 40,
+    headerHeight: 80,
+
+    gapX: 30,
+    gapY: 30,
+
+    leafMinWidth: 220,
+    leafMaxWidth: 360,
+    leafMinHeight: 100,
+    lineHeight: 18,
+
+    /* Ziel-Seitenverhaeltnis fuer die automatische Zeilenbildung. */
+    targetAspectRatio: 1.65,
+    maxInnerWidth: 1500,
+
+    includeEmbeddedElements: true,
+
+    /*
+     * ADMBw ResourceRole basiert auf einem UML-Part. Dessen PropertyType zeigt
+     * auf die ResourceArchitecture-Definition. Ist diese Option true, werden
+     * auch die Parts dieser referenzierten Definition rekursiv unter der
+     * ResourceRole dargestellt.
+     */
+    followResourceRolePropertyType: true,
+
+    sortChildrenByName: false,
+    maxDepth: 40
+};
+
+function safeString(value) {
+    if (value === null || typeof value === "undefined") {
+        return "";
+    }
+    return "" + value;
+}
+
+function lower(value) {
+    return safeString(value).toLowerCase();
+}
+
+function log(message) {
+    Session.Output(message);
+}
+
+function errorText(error) {
+    if (!error) {
+        return "unbekannter Fehler";
+    }
+    if (error.description) {
+        return safeString(error.description);
+    }
+    if (error.message) {
+        return safeString(error.message);
+    }
+    return safeString(error);
+}
+
+function roundInt(value) {
+    return Math.round(value);
+}
+
+function collectionCount(collection) {
+    try {
+        return collection ? collection.Count : 0;
+    } catch (e) {
+        return 0;
+    }
+}
+
+function isPartLikeElement(element) {
+    var metaType = lower(element.MetaType);
+    var type = lower(element.Type);
+
+    return metaType.indexOf("resourcerole") >= 0 || type === "part";
+}
+
+function appendChildrenOfPropertyType(element, result, seen) {
+    var propertyTypeID = 0;
+    var classifier;
+
+    if (!CFG.followResourceRolePropertyType || !isPartLikeElement(element)) {
+        return;
+    }
+
+    try {
+        propertyTypeID = Number(element.PropertyType);
+    } catch (e1) {
+        propertyTypeID = 0;
+    }
+
+    if (!propertyTypeID || propertyTypeID === Number(element.ElementID)) {
+        return;
+    }
+
+    try {
+        classifier = Repository.GetElementByID(propertyTypeID);
+
+        if (!classifier) {
+            return;
+        }
+
+        appendUniqueElements(
+            classifier.Elements,
+            result,
+            seen,
+            element.ElementID
+        );
+
+        if (CFG.includeEmbeddedElements) {
+            appendUniqueElements(
+                classifier.EmbeddedElements,
+                result,
+                seen,
+                element.ElementID
+            );
+        }
+    } catch (e2) {
+        log(
+            "WARNUNG: PropertyType von '" +
+            safeString(element.Name) +
+            "' konnte nicht verfolgt werden: " +
+            errorText(e2)
+        );
+    }
+}
+
+function appendUniqueElements(collection, result, seen, parentID) {
+    var i;
+    var element;
+    var id;
+    var key;
+
+    for (i = 0; i < collectionCount(collection); i++) {
+        try {
+            element = collection.GetAt(i);
+
+            if (!element) {
+                continue;
+            }
+
+            id = Number(element.ElementID);
+
+            if (!id || id === Number(parentID)) {
+                continue;
+            }
+
+            key = "E" + id;
+
+            if (!seen[key]) {
+                seen[key] = true;
+                result.push(element);
+            }
+        } catch (e) {
+            log(
+                "WARNUNG: Ein Kindelement konnte nicht gelesen werden: " +
+                errorText(e)
+            );
+        }
+    }
+}
+
+/*
+ * Liefert die echten EA-Kindelemente. Elements und EmbeddedElements werden
+ * zusammengefuehrt, weil ADMBw-ResourceRoles als Parts/embedded elements
+ * vorkommen koennen. Doppelte Eintraege werden entfernt.
+ */
+function getChildElements(element) {
+    var result = [];
+    var seen = {};
+
+    try {
+        appendUniqueElements(
+            element.Elements,
+            result,
+            seen,
+            element.ElementID
+        );
+    } catch (e1) {
+        log(
+            "WARNUNG: Elements von '" +
+            safeString(element.Name) +
+            "' konnten nicht gelesen werden."
+        );
+    }
+
+    if (CFG.includeEmbeddedElements) {
+        try {
+            appendUniqueElements(
+                element.EmbeddedElements,
+                result,
+                seen,
+                element.ElementID
+            );
+        } catch (e2) {
+            /*
+             * Nicht jeder Elementtyp stellt diese Collection
+             * sinnvoll bereit.
+             */
+        }
+    }
+
+    /*
+     * Fuer ResourceRoles/Parts zusaetzlich die Struktur
+     * der Typdefinition.
+     */
+    appendChildrenOfPropertyType(element, result, seen);
+
+    if (CFG.sortChildrenByName) {
+        result.sort(function (a, b) {
+            var an = lower(a.Name);
+            var bn = lower(b.Name);
+
+            if (an < bn) {
+                return -1;
+            }
+
+            if (an > bn) {
+                return 1;
+            }
+
+            return Number(a.ElementID) - Number(b.ElementID);
+        });
+    }
+
+    return result;
+}
+
+function newTreeNode(element, depth) {
+    return {
+        element: element,
+        depth: depth,
+        children: [],
+        rows: [],
+        width: 0,
+        height: 0,
+        headerHeight: 0,
+        x: 0,
+        y: 0
+    };
+}
+
+function buildTree(element, depth, path) {
+    var id = Number(element.ElementID);
+    var key = "E" + id;
+    var node;
+    var children;
+    var i;
+    var childNode;
+
+    if (depth > CFG.maxDepth) {
+        log(
+            "WARNUNG: Maximale Rekursionstiefe bei '" +
+            safeString(element.Name) +
+            "' erreicht."
+        );
+
+        return null;
+    }
+
+    if (path[key]) {
+        log(
+            "WARNUNG: Zyklus erkannt. Element '" +
+            safeString(element.Name) +
+            "' wird an dieser Stelle nicht erneut verfolgt."
+        );
+
+        return null;
+    }
+
+    path[key] = true;
+
+    node = newTreeNode(element, depth);
+    children = getChildElements(element);
+
+    for (i = 0; i < children.length; i++) {
+        childNode = buildTree(
+            children[i],
+            depth + 1,
+            path
+        );
+
+        if (childNode) {
+            node.children.push(childNode);
+        }
+    }
+
+    delete path[key];
+
+    return node;
+}
+
+function getElementDisplayText(element) {
+    var parts = [];
+    var metaType = safeString(element.MetaType);
+    var name = safeString(element.Name);
+    var propertyTypeName = "";
+    var multiplicity = "";
+
+    try {
+        propertyTypeName = safeString(element.PropertyTypeName);
+    } catch (e1) {
+        propertyTypeName = "";
+    }
+
+    try {
+        multiplicity = safeString(element.Multiplicity);
+    } catch (e2) {
+        multiplicity = "";
+    }
+
+    if (metaType) {
+        parts.push(metaType);
+    }
+
+    if (name) {
+        parts.push(name);
+    }
+
+    if (
+        propertyTypeName &&
+        lower(name).indexOf(lower(propertyTypeName)) < 0
+    ) {
+        parts.push(propertyTypeName);
+    }
+
+    if (multiplicity) {
+        parts.push("[" + multiplicity + "]");
+    }
+
+    return parts.join(" ");
+}
+
+function estimateLabelBox(element) {
+    var text = getElementDisplayText(element);
+    var textLength = Math.max(1, text.length);
+
+    var width = CFG.leafMinWidth + Math.min(
+        CFG.leafMaxWidth - CFG.leafMinWidth,
+        Math.max(0, textLength - 24) * 4
+    );
+
+    var charsPerLine = Math.max(
+        14,
+        Math.floor((width - 28) / 7)
+    );
+
+    var lines = Math.max(
+        2,
+        Math.ceil(textLength / charsPerLine) + 1
+    );
+
+    var height = Math.max(
+        CFG.leafMinHeight,
+        28 + lines * CFG.lineHeight
+    );
+
+    return {
+        width: width,
+        height: height
+    };
+}
+
+function pushRow(rows, row) {
+    if (row.children.length > 0) {
+        rows.push(row);
+    }
+}
+
+/*
+ * Bottom-up-Messung.
+ *
+ * Die Kinder werden mit einem Shelf-/Zeilenalgorithmus gepackt.
+ * Dadurch wird nicht nur nach Ebenen gestapelt, sondern jede
+ * Elternbox exakt so gross, dass alle rekursiv gemessenen
+ * Kindboxen hineinpassen.
+ */
+function measureNode(node) {
+    var labelBox = estimateLabelBox(node.element);
+    var i;
+    var child;
+    var totalArea = 0;
+    var largestChildWidth = 0;
+    var targetRowWidth;
+    var rows = [];
+    var row = {
+        children: [],
+        width: 0,
+        height: 0
+    };
+    var addedWidth;
+    var contentWidth = 0;
+    var contentHeight = 0;
+
+    for (i = 0; i < node.children.length; i++) {
+        measureNode(node.children[i]);
+    }
+
+    if (node.children.length === 0) {
+        node.width = labelBox.width;
+        node.height = labelBox.height;
+        node.headerHeight = node.height;
+        node.rows = [];
+
+        return;
+    }
+
+    for (i = 0; i < node.children.length; i++) {
+        child = node.children[i];
+
+        totalArea +=
+            (child.width + CFG.gapX) *
+            (child.height + CFG.gapY);
+
+        largestChildWidth = Math.max(
+            largestChildWidth,
+            child.width
+        );
+    }
+
+    targetRowWidth = Math.sqrt(
+        totalArea * CFG.targetAspectRatio
+    );
+
+    targetRowWidth = Math.max(
+        targetRowWidth,
+        largestChildWidth
+    );
+
+    targetRowWidth = Math.min(
+        targetRowWidth,
+        CFG.maxInnerWidth
+    );
+
+    targetRowWidth = Math.max(
+        targetRowWidth,
+        largestChildWidth
+    );
+
+    for (i = 0; i < node.children.length; i++) {
+        child = node.children[i];
+        addedWidth = child.width;
+
+        if (row.children.length > 0) {
+            addedWidth += CFG.gapX;
+        }
+
+        if (
+            row.children.length > 0 &&
+            row.width + addedWidth > targetRowWidth
+        ) {
+            pushRow(rows, row);
+
+            row = {
+                children: [],
+                width: 0,
+                height: 0
+            };
+
+            addedWidth = child.width;
+        }
+
+        row.children.push(child);
+        row.width += addedWidth;
+        row.height = Math.max(
+            row.height,
+            child.height
+        );
+    }
+
+    pushRow(rows, row);
+
+    for (i = 0; i < rows.length; i++) {
+        contentWidth = Math.max(
+            contentWidth,
+            rows[i].width
+        );
+
+        contentHeight += rows[i].height;
+
+        if (i > 0) {
+            contentHeight += CFG.gapY;
+        }
+    }
+
+    node.headerHeight = Math.max(
+        CFG.headerHeight,
+        labelBox.height - 10
+    );
+
+    node.width = Math.max(
+        labelBox.width + 2 * CFG.paddingX,
+        contentWidth + 2 * CFG.paddingX
+    );
+
+    node.height =
+        node.headerHeight +
+        contentHeight +
+        CFG.paddingBottom;
+
+    node.rows = rows;
+}
+
+/*
+ * Top-down-Platzierung auf Basis der zuvor
+ * gemessenen Rechtecke.
+ */
+function layoutNode(node, x, y) {
+    var innerWidth;
+    var currentY;
+    var row;
+    var rowX;
+    var childY;
+    var i;
+    var j;
+    var child;
+
+    node.x = x;
+    node.y = y;
+
+    if (node.rows.length === 0) {
+        return;
+    }
+
+    innerWidth =
+        node.width -
+        2 * CFG.paddingX;
+
+    currentY =
+        y +
+        node.headerHeight;
+
+    for (i = 0; i < node.rows.length; i++) {
+        row = node.rows[i];
+
+        rowX =
+            x +
+            CFG.paddingX +
+            Math.max(
+                0,
+                (innerWidth - row.width) / 2
+            );
+
+        for (j = 0; j < row.children.length; j++) {
+            child = row.children[j];
+
+            childY =
+                currentY +
+                Math.max(
+                    0,
+                    (row.height - child.height) / 2
+                );
+
+            layoutNode(
+                child,
+                rowX,
+                childY
+            );
+
+            rowX +=
+                child.width +
+                CFG.gapX;
+        }
+
+        currentY +=
+            row.height +
+            CFG.gapY;
+    }
+}
+
+function countNodes(node) {
+    var count = 1;
+    var i;
+
+    for (i = 0; i < node.children.length; i++) {
+        count += countNodes(node.children[i]);
+    }
+
+    return count;
+}
+
+function isP2ResourceStructureText(value) {
+    var text = lower(value);
+    var hasP2 = text.indexOf("p2") >= 0;
+
+    var hasName =
+        text.indexOf("resource structure") >= 0 ||
+        text.indexOf("ressourcenstruktur") >= 0;
+
+    return hasP2 && hasName;
+}
+
+function diagramMetaType(diagram) {
+    try {
+        return safeString(diagram.MetaType);
+    } catch (e) {
+        return "";
+    }
+}
+
+function findP2MetaTypeInPackage(pkg) {
+    var i;
+    var diagram;
+    var descriptor;
+    var metaType;
+    var childPackage;
+    var result;
+
+    for (i = 0; i < collectionCount(pkg.Diagrams); i++) {
+        diagram = pkg.Diagrams.GetAt(i);
+
+        descriptor =
+            safeString(diagram.Name) +
+            " " +
+            safeString(diagram.MetaType);
+
+        if (isP2ResourceStructureText(descriptor)) {
+            metaType = diagramMetaType(diagram);
+
+            if (metaType) {
+                return metaType;
+            }
+        }
+    }
+
+    for (i = 0; i < collectionCount(pkg.Packages); i++) {
+        childPackage = pkg.Packages.GetAt(i);
+
+        result = findP2MetaTypeInPackage(
+            childPackage
+        );
+
+        if (result) {
+            return result;
+        }
+    }
+
+    return "";
+}
+
+function resolveP2DiagramType() {
+    var current;
+    var metaType;
+    var i;
+    var model;
+
+    if (CFG.p2DiagramMetaType) {
+        return CFG.p2DiagramMetaType;
+    }
+
+    try {
+        current = Repository.GetCurrentDiagram();
+
+        if (
+            current &&
+            isP2ResourceStructureText(
+                safeString(current.Name) +
+                " " +
+                safeString(current.MetaType)
+            )
+        ) {
+            metaType = diagramMetaType(current);
+
+            if (metaType) {
+                return metaType;
+            }
+        }
+    } catch (e1) {
+        /* Kein offenes Diagramm. */
+    }
+
+    for (
+        i = 0;
+        i < collectionCount(Repository.Models);
+        i++
+    ) {
+        model = Repository.Models.GetAt(i);
+        metaType = findP2MetaTypeInPackage(model);
+
+        if (metaType) {
+            return metaType;
+        }
+    }
+
+    return "";
+}
+
+function diagramNameExists(pkg, name) {
+    var i;
+    var diagram;
+
+    for (i = 0; i < collectionCount(pkg.Diagrams); i++) {
+        diagram = pkg.Diagrams.GetAt(i);
+
+        if (safeString(diagram.Name) === name) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function uniqueDiagramName(pkg, baseName) {
+    var name = baseName;
+    var suffix = 2;
+
+    while (diagramNameExists(pkg, name)) {
+        name =
+            baseName +
+            " (" +
+            suffix +
+            ")";
+
+        suffix++;
+    }
+
+    return name;
+}
+
+function resolveTargetPackage(rootElement) {
+    var pkg;
+
+    if (CFG.targetPackageGuid) {
+        try {
+            pkg = Repository.GetPackageByGuid(
+                CFG.targetPackageGuid
+            );
+
+            if (pkg) {
+                return pkg;
+            }
+        } catch (e) {
+            log(
+                "WARNUNG: Das konfigurierte Ziel-Package " +
+                "konnte nicht gelesen werden: " +
+                errorText(e)
+            );
+        }
+
+        log(
+            "WARNUNG: CFG.targetPackageGuid ist gesetzt, " +
+            "aber das Package wurde nicht gefunden."
+        );
+    }
+
+    return Repository.GetPackageByID(
+        rootElement.PackageID
+    );
+}
+
+function createDiagram(pkg, rootElement) {
+    var projectName = CFG.projectName
+        ? CFG.projectName
+        : safeString(rootElement.Name);
+
+    var baseName =
+        CFG.diagramNamePrefix +
+        " : " +
+        projectName +
+        " : " +
+        CFG.diagramNameSuffix;
+
+    var name = uniqueDiagramName(
+        pkg,
+        baseName
+    );
+
+    var mdgType = resolveP2DiagramType();
+    var diagram = null;
+    var ok = false;
+
+    if (mdgType) {
+        try {
+            diagram = pkg.Diagrams.AddNew(
+                name,
+                mdgType
+            );
+
+            ok =
+                diagram &&
+                diagram.Update();
+
+            if (!ok) {
+                log(
+                    "WARNUNG: P2-MDG-Diagrammtyp '" +
+                    mdgType +
+                    "' konnte nicht angelegt werden."
+                );
+            }
+        } catch (e1) {
+            log(
+                "WARNUNG: P2-MDG-Diagrammtyp '" +
+                mdgType +
+                "' konnte nicht angelegt werden: " +
+                errorText(e1)
+            );
+
+            diagram = null;
+        }
+    }
+
+    if (!diagram || !ok) {
+        log(
+            "WARNUNG: Kein verwendbarer P2-Diagrammtyp gefunden. " +
+            "Es wird ein '" +
+            CFG.fallbackDiagramType +
+            "'-Diagramm erzeugt."
+        );
+
+        log(
+            "          Tragen Sie bei Bedarf den FQN " +
+            "in CFG.p2DiagramMetaType ein."
+        );
+
+        diagram = pkg.Diagrams.AddNew(
+            name,
+            CFG.fallbackDiagramType
+        );
+
+        if (!diagram || !diagram.Update()) {
+            throw new Error(
+                "Diagramm konnte nicht angelegt werden: " +
+                (
+                    diagram
+                        ? safeString(diagram.GetLastError())
+                        : "unbekannter Fehler"
+                )
+            );
+        }
+    }
+
+    diagram.Orientation = "L";
+
+    diagram.Notes =
+        "Automatisch erzeugter rekursiver P2 fuer " +
+        safeString(rootElement.Name) +
+        ".";
+
+    if (!diagram.Update()) {
+        throw new Error(
+            "Diagrammeigenschaften konnten nicht gespeichert werden: " +
+            safeString(diagram.GetLastError())
+        );
+    }
+
+    pkg.Diagrams.Refresh();
+
+    return diagram;
+}
+
+function addNodeToDiagram(diagram, node) {
+    var left = roundInt(node.x);
+    var right = roundInt(
+        node.x + node.width
+    );
+    var top = roundInt(node.y);
+    var bottom = roundInt(
+        node.y + node.height
+    );
+
+    var position =
+        "l=" + left +
+        ";r=" + right +
+        ";t=" + top +
+        ";b=" + bottom +
+        ";";
+
+    var diagramObject;
+    var i;
+
+    /*
+     * Eltern zuerst, Kinder danach:
+     * Kinder liegen damit grafisch vor dem Container.
+     */
+    diagramObject = diagram.DiagramObjects.AddNew(
+        position,
+        ""
+    );
+
+    diagramObject.ElementID =
+        node.element.ElementID;
+
+    /*
+     * Features umbrechen.
+     */
+    diagramObject.ElementDisplayMode = 2;
+
+    if (!diagramObject.Update()) {
+        throw new Error(
+            "DiagramObject fuer '" +
+            safeString(node.element.Name) +
+            "' konnte nicht gespeichert werden: " +
+            safeString(diagramObject.GetLastError())
+        );
+    }
+
+    for (i = 0; i < node.children.length; i++) {
+        addNodeToDiagram(
+            diagram,
+            node.children[i]
+        );
+    }
+}
+
+function main() {
+    var selectedType;
+    var rootElement;
+    var rootMetaType;
+    var targetPackage;
+    var tree;
+    var diagram;
+    var numberOfNodes;
+
+    Repository.EnsureOutputVisible("Script");
+
+    log(
+        "--- Rekursiven P2 Resource Structure erzeugen ---"
+    );
+
+    selectedType =
+        Repository.GetTreeSelectedItemType();
+
+    if (selectedType !== otElement) {
+        Session.Prompt(
+            "Bitte im Browser ein " +
+            "ADMBw-ResourceArchitecture-Element markieren.",
+            promptOK
+        );
+
+        return;
+    }
+
+    rootElement =
+        Repository.GetTreeSelectedObject();
+
+    if (!rootElement) {
+        Session.Prompt(
+            "Das markierte Element konnte nicht gelesen werden.",
+            promptOK
+        );
+
+        return;
+    }
+
+    rootMetaType = lower(rootElement.MetaType);
+
+    if (
+        rootMetaType.indexOf(
+            "resourcearchitecture"
+        ) < 0
+    ) {
+        log(
+            "WARNUNG: Das markierte Element hat den Metatyp '" +
+            safeString(rootElement.MetaType) +
+            "' und nicht eindeutig 'ResourceArchitecture'."
+        );
+
+        log(
+            "          Das Skript wird trotzdem ausgefuehrt."
+        );
+    }
+
+    targetPackage =
+        resolveTargetPackage(rootElement);
+
+    if (!targetPackage) {
+        Session.Prompt(
+            "Das Ziel-Package des Elements konnte nicht ermittelt werden.",
+            promptOK
+        );
+
+        return;
+    }
+
+    tree = buildTree(
+        rootElement,
+        0,
+        {}
+    );
+
+    if (!tree) {
+        Session.Prompt(
+            "Die Elementhierarchie konnte nicht aufgebaut werden.",
+            promptOK
+        );
+
+        return;
+    }
+
+    measureNode(tree);
+
+    layoutNode(
+        tree,
+        CFG.leftMargin,
+        CFG.topMargin
+    );
+
+    numberOfNodes = countNodes(tree);
+
+    try {
+        diagram = createDiagram(
+            targetPackage,
+            rootElement
+        );
+
+        addNodeToDiagram(
+            diagram,
+            tree
+        );
+
+        diagram.DiagramObjects.Refresh();
+        diagram.Update();
+
+        Repository.RefreshModelView(
+            targetPackage.PackageID
+        );
+
+        Repository.OpenDiagram(
+            diagram.DiagramID
+        );
+
+        Repository.ReloadDiagram(
+            diagram.DiagramID
+        );
+
+        log(
+            "FERTIG: Diagramm '" +
+            diagram.Name +
+            "' mit " +
+            numberOfNodes +
+            " Element(en) erzeugt."
+        );
+
+        log(
+            "Gesamtgroesse des Wurzelcontainers: " +
+            roundInt(tree.width) +
+            " x " +
+            roundInt(tree.height) +
+            "."
+        );
+    } catch (e) {
+        log(
+            "FEHLER: " +
+            errorText(e)
+        );
+
+        Session.Prompt(
+            "Beim Erzeugen des P2 ist ein Fehler aufgetreten. " +
+            "Details stehen im Script-Output.",
+            promptOK
+        );
+    }
+}
+
+main();
